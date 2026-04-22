@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -67,10 +70,12 @@ class SelfPruningNet(nn.Module):
 def train_one_epoch(model, loader, optimizer, criterion, device, lambda_):
     model.train()
     total_loss = 0.0
+    total_cls_loss = 0.0
+    total_sparse_loss = 0.0
     total_correct = 0
     total_samples = 0
 
-    for images, labels in loader:
+    for batch_idx, (images, labels) in enumerate(loader):
         images, labels = images.to(device), labels.to(device)
 
         optimizer.zero_grad()
@@ -81,16 +86,37 @@ def train_one_epoch(model, loader, optimizer, criterion, device, lambda_):
         loss = cls_loss + lambda_ * sparse_loss
 
         loss.backward()
+
+        if batch_idx % 100 == 0:
+            print("fc1 gate grad mean:", model.fc1.gate_scores.grad.abs().mean().item())
+            print("fc2 gate grad mean:", model.fc2.gate_scores.grad.abs().mean().item())
+            print("fc3 gate grad mean:", model.fc3.gate_scores.grad.abs().mean().item())
+        
         optimizer.step()
 
         total_loss += loss.item()
+        total_cls_loss += cls_loss.item()
+        total_sparse_loss += sparse_loss.item()
+
         preds = outputs.argmax(dim=1)
         total_correct += (preds == labels).sum().item()
         total_samples += labels.size(0)
 
+        # Optional batch-level debug print every 100 batches
+        if batch_idx % 100 == 0:
+            print(
+                f"Batch {batch_idx}/{len(loader)} | "
+                f"Cls Loss: {cls_loss.item():.4f} | "
+                f"Sparse Loss: {sparse_loss.item():.2f} | "
+                f"Weighted Sparse: {(lambda_ * sparse_loss).item():.4f}"
+            )
+
     avg_loss = total_loss / len(loader)
+    avg_cls_loss = total_cls_loss / len(loader)
+    avg_sparse_loss = total_sparse_loss / len(loader)
     acc = 100.0 * total_correct / total_samples
-    return avg_loss, acc
+
+    return avg_loss, avg_cls_loss, avg_sparse_loss, acc
 
 def evaluate(model, loader, criterion, device):
     model.eval()
@@ -127,20 +153,75 @@ def compute_sparsity(model, threshold=1e-2):
 
     return 100.0 * pruned / total
 
+def get_gate_statistics(model):
+    all_gates = []
+
+    with torch.no_grad():
+        for module in model.modules():
+            if isinstance(module, PrunableLinear):
+                gates = module.get_gates().view(-1)
+                all_gates.append(gates)
+
+    all_gates = torch.cat(all_gates)
+
+    stats = {
+        "mean_gate": all_gates.mean().item(),
+        "min_gate": all_gates.min().item(),
+        "max_gate": all_gates.max().item(),
+        "below_0.5": (all_gates < 0.5).float().mean().item() * 100,
+        "below_0.1": (all_gates < 0.1).float().mean().item() * 100,
+        "below_0.01": (all_gates < 0.01).float().mean().item() * 100,
+    }
+
+    return stats
+
+
+def print_layerwise_gate_stats(model):
+    with torch.no_grad():
+        for name, module in model.named_modules():
+            if isinstance(module, PrunableLinear):
+                gates = module.get_gates()
+                print(
+                    f"{name}: mean={gates.mean().item():.4f}, "
+                    f"min={gates.min().item():.4f}, "
+                    f"max={gates.max().item():.4f}, "
+                    f"<0.1={(gates < 0.1).float().mean().item() * 100:.2f}%"
+                )
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = SelfPruningNet().to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-lambda_ = 1e-5
-epochs = 5
+lambda_ = 1e-4
+epochs = 10
 
 for epoch in range(epochs):
-    train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device, lambda_)
+    train_loss, train_cls_loss, train_sparse_loss, train_acc = train_one_epoch(
+        model, train_loader, optimizer, criterion, device, lambda_
+    )
     test_loss, test_acc = evaluate(model, test_loader, criterion, device)
-    sparsity = compute_sparsity(model)
 
-    print(f"Epoch {epoch+1}/{epochs}")
-    print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
-    print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.2f}%")
-    print(f"Sparsity: {sparsity:.2f}%")
+    sparsity = compute_sparsity(model)
+    stats = get_gate_statistics(model)
+
+    print(f"\nEpoch {epoch+1}/{epochs}")
+    print(f"Train Total Loss: {train_loss:.4f}")
+    print(f"Train Cls Loss:   {train_cls_loss:.4f}")
+    print(f"Train Sparse Loss:{train_sparse_loss:.2f}")
+    print(f"Train Acc:        {train_acc:.2f}%")
+    print(f"Test Loss:        {test_loss:.4f}")
+    print(f"Test Acc:         {test_acc:.2f}%")
+    print(f"Sparsity (<1e-2): {sparsity:.2f}%")
+    print(
+        f"Gates -> mean: {stats['mean_gate']:.4f}, "
+        f"min: {stats['min_gate']:.6f}, "
+        f"max: {stats['max_gate']:.4f}"
+    )
+    print(
+        f"% gates < 0.5: {stats['below_0.5']:.2f}% | "
+        f"< 0.1: {stats['below_0.1']:.2f}% | "
+        f"< 0.01: {stats['below_0.01']:.2f}%"
+    )
+
+    print_layerwise_gate_stats(model)
