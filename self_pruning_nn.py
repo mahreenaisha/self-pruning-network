@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 transform = transforms.ToTensor()
 
 train_dataset = datasets.CIFAR10(root="./data", train=True, download=True, transform=transform) # 50,000 images
-test_dataset = datasets.CIFAR10(root="./data", train=False, download=True, transform=transform) # 10,1000 images
+test_dataset = datasets.CIFAR10(root="./data", train=False, download=True, transform=transform) # 10,000 images
 
 train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
 test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False)
@@ -188,40 +188,119 @@ def print_layerwise_gate_stats(model):
                     f"<0.1={(gates < 0.1).float().mean().item() * 100:.2f}%"
                 )
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = SelfPruningNet().to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+def print_final_network_report(lambda_, final_test_acc, final_sparsity, stats):
+    print("\n" + "=" * 70)
+    print("FINAL STATE OF THE NETWORK")
+    print("=" * 70)
+    print(f"Lambda (λ):              {lambda_}")
+    print(f"Final Test Accuracy (%): {final_test_acc:.2f}")
+    print(f"Final Sparsity (%):      {final_sparsity:.2f}")
+    print(f"Mean Gate Value:         {stats['mean_gate']:.4f}")
+    print(f"Minimum Gate Value:      {stats['min_gate']:.6f}")
+    print(f"Maximum Gate Value:      {stats['max_gate']:.4f}")
+    print(f"Gates < 0.5 (%):         {stats['below_0.5']:.2f}")
+    print(f"Gates < 0.1 (%):         {stats['below_0.1']:.2f}")
+    print(f"Gates < 0.01 (%):        {stats['below_0.01']:.2f}")
+    print("=" * 70)
 
-lambda_ = 1e-4
+
+def print_results_table(results):
+    print("\n" + "=" * 95)
+    print(f"{'Lambda (λ)':<15}{'Final Test Accuracy (%)':<28}{'Final Sparsity (%)':<22}{'Observation':<30}")
+    print("=" * 95)
+
+    for row in results:
+        print(
+            f"{row['lambda']:<15}"
+            f"{row['final_test_accuracy']:<28.2f}"
+            f"{row['final_sparsity']:<22.2f}"
+            f"{row['observation']:<30}"
+        )
+
+    print("=" * 95)
+
+def save_gate_histogram(model, lambda_):
+    all_gates = []
+
+    with torch.no_grad():
+        for module in model.modules():
+            if isinstance(module, PrunableLinear):
+                all_gates.append(module.get_gates().view(-1).cpu())
+
+    all_gates = torch.cat(all_gates).numpy()
+
+    plt.figure(figsize=(8, 6))
+    plt.hist(all_gates, bins=50)
+    plt.xlabel("Gate Value")
+    plt.ylabel("Number of Gates")
+    plt.title(f"Final Gate Distribution (lambda={lambda_})")
+    plt.grid(True)
+
+    filename = f"gates_lambda_{str(lambda_).replace('.', '_')}.png"
+    plt.savefig(filename, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"Saved gate histogram to: {filename}")
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+criterion = nn.CrossEntropyLoss()
+
+lambda_values = [1e-5, 1e-4, 5e-4]
+results = []
 epochs = 10
 
-for epoch in range(epochs):
-    train_loss, train_cls_loss, train_sparse_loss, train_acc = train_one_epoch(
-        model, train_loader, optimizer, criterion, device, lambda_
-    )
-    test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+for lambda_ in lambda_values:
+    print("\n" + "#" * 70)
+    print(f"RUNNING EXPERIMENT FOR LAMBDA = {lambda_}")
+    print("#" * 70)
 
-    sparsity = compute_sparsity(model)
-    stats = get_gate_statistics(model)
+    model = SelfPruningNet().to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    print(f"\nEpoch {epoch+1}/{epochs}")
-    print(f"Train Total Loss: {train_loss:.4f}")
-    print(f"Train Cls Loss:   {train_cls_loss:.4f}")
-    print(f"Train Sparse Loss:{train_sparse_loss:.2f}")
-    print(f"Train Acc:        {train_acc:.2f}%")
-    print(f"Test Loss:        {test_loss:.4f}")
-    print(f"Test Acc:         {test_acc:.2f}%")
-    print(f"Sparsity (<1e-2): {sparsity:.2f}%")
-    print(
-        f"Gates -> mean: {stats['mean_gate']:.4f}, "
-        f"min: {stats['min_gate']:.6f}, "
-        f"max: {stats['max_gate']:.4f}"
-    )
-    print(
-        f"% gates < 0.5: {stats['below_0.5']:.2f}% | "
-        f"< 0.1: {stats['below_0.1']:.2f}% | "
-        f"< 0.01: {stats['below_0.01']:.2f}%"
-    )
+    for epoch in range(epochs):
+        print(f"\nEpoch {epoch+1}/{epochs}")
 
-    print_layerwise_gate_stats(model)
+        train_loss, train_cls_loss, train_sparse_loss, train_acc = train_one_epoch(
+            model, train_loader, optimizer, criterion, device, lambda_
+        )
+        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+
+        sparsity = compute_sparsity(model)
+        stats = get_gate_statistics(model)
+
+        print(f"Train Total Loss: {train_loss:.4f}")
+        print(f"Train Cls Loss:   {train_cls_loss:.4f}")
+        print(f"Train Sparse Loss:{train_sparse_loss:.2f}")
+        print(f"Train Acc:        {train_acc:.2f}%")
+        print(f"Test Loss:        {test_loss:.4f}")
+        print(f"Test Acc:         {test_acc:.2f}%")
+        print(f"Sparsity (<1e-2): {sparsity:.2f}%")
+        print(
+            f"Gates -> mean: {stats['mean_gate']:.4f}, "
+            f"min: {stats['min_gate']:.6f}, "
+            f"max: {stats['max_gate']:.4f}"
+        )
+        print(
+            f"% gates < 0.5: {stats['below_0.5']:.2f}% | "
+            f"< 0.1: {stats['below_0.1']:.2f}% | "
+            f"< 0.01: {stats['below_0.01']:.2f}%"
+        )
+
+        print_layerwise_gate_stats(model)
+
+    # Final state after training finishes for this lambda
+    final_test_loss, final_test_acc = evaluate(model, test_loader, criterion, device)
+    final_sparsity = compute_sparsity(model)
+    final_stats = get_gate_statistics(model)
+
+    print_final_network_report(lambda_, final_test_acc, final_sparsity, final_stats)
+    save_gate_histogram(model, lambda_)
+
+    results.append({
+        "lambda": lambda_,
+        "final_test_accuracy": final_test_acc,
+        "final_sparsity": final_sparsity,
+        "observation": "-"
+    })
+
+print_results_table(results)
