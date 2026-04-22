@@ -1,6 +1,3 @@
-import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -60,11 +57,21 @@ class SelfPruningNet(nn.Module):
         x = self.fc3(x)
         return x
 
-    def sparsity_loss(self):
+    def sparsity_loss(self, mode="l1"):
         loss = 0.0
+
         for module in self.modules():
             if isinstance(module, PrunableLinear):
-                loss = loss + module.get_gates().sum()
+                gates = module.get_gates()
+
+                if mode == "l1":
+                    # normalized L1 (better than your current)
+                    loss = loss + gates.sum() / gates.numel()
+
+                elif mode == "binarize":
+                    # encourages gates -> 0 or 1
+                    loss = loss + (gates * (1 - gates)).sum() / gates.numel()
+
         return loss
     
 def train_one_epoch(model, loader, optimizer, criterion, device, lambda_):
@@ -82,15 +89,29 @@ def train_one_epoch(model, loader, optimizer, criterion, device, lambda_):
 
         outputs = model(images)
         cls_loss = criterion(outputs, labels)
-        sparse_loss = model.sparsity_loss()
+        sparse_loss = model.sparsity_loss(mode="binarize")
         loss = cls_loss + lambda_ * sparse_loss
 
         loss.backward()
 
         if batch_idx % 100 == 0:
-            print("fc1 gate grad mean:", model.fc1.gate_scores.grad.abs().mean().item())
-            print("fc2 gate grad mean:", model.fc2.gate_scores.grad.abs().mean().item())
-            print("fc3 gate grad mean:", model.fc3.gate_scores.grad.abs().mean().item())
+            # Safe gradient printing for fc1
+            if model.fc1.gate_scores.grad is not None:
+                print(f"fc1 gate grad mean: {model.fc1.gate_scores.grad.abs().mean().item():.6f}")
+            else:
+                print("fc1 gate grad mean: None")
+                
+            # Safe gradient printing for fc2
+            if model.fc2.gate_scores.grad is not None:
+                print(f"fc2 gate grad mean: {model.fc2.gate_scores.grad.abs().mean().item():.6f}")
+            else:
+                print("fc2 gate grad mean: None")
+            
+            # Safe gradient printing for fc3
+            if model.fc3.gate_scores.grad is not None:
+                print(f"fc3 gate grad mean: {model.fc3.gate_scores.grad.abs().mean().item():.6f}")
+            else:
+                print("fc3 gate grad mean: None")
         
         optimizer.step()
 
@@ -245,7 +266,7 @@ def save_gate_histogram(model, lambda_):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 criterion = nn.CrossEntropyLoss()
 
-lambda_values = [1e-5, 1e-4, 5e-4]
+lambda_values = [1e-4]
 results = []
 epochs = 10
 
