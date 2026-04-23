@@ -100,6 +100,64 @@ The combination of sigmoid gating and L1 regularization leads to:
 | 1e-04      | 54.39            | 87.04               | 
 | 5e-04      | 51.65            | 95.90               | 
 
+### Analysis: Accuracy vs Sparsity Trade-off
+
+The results demonstrate the impact of the sparsity coefficient (λ) on both model performance and pruning behavior.
+
+As λ increases, the sparsity level increases significantly:
+
+- At **λ = 1e-6**, sparsity is **68.53%**
+- At **λ = 5e-4**, sparsity reaches **95.90%**
+
+This confirms that a higher λ imposes stronger sparsity pressure, pushing more gate values toward zero and effectively pruning a larger portion of the network.
+
+---
+
+### Effect on Accuracy
+
+The effect of λ on accuracy is non-linear:
+
+- Accuracy improves slightly from **52.50% → 54.39%** as λ increases from **1e-6 to 1e-4**
+- Beyond this point, accuracy drops to **51.65%** at **λ = 5e-4**
+
+This indicates that moderate sparsity can act as a form of **regularization**, improving generalization by removing redundant connections. However, excessive sparsity leads to **over-pruning**, where important connections are also removed, degrading performance.
+
+---
+
+### Trade-off Interpretation
+
+- **Low λ (1e-6)**:
+  - Lower sparsity
+  - Better preservation of important connections
+  - Clear separation in gate distribution
+  - More interpretable pruning behavior
+
+- **Medium λ (1e-5 to 1e-4)**:
+  - Higher sparsity
+  - Slight improvement in accuracy (regularization effect)
+  - Balanced trade-off between performance and compression
+
+- **High λ (5e-4)**:
+  - Very high sparsity (~96%)
+  - Drop in accuracy due to excessive pruning
+  - Loss of important connections
+
+---
+
+### Key Insight
+
+The results highlight the importance of selecting an appropriate λ value:
+
+> A well-chosen λ enables the model to remove unnecessary connections while preserving critical ones, achieving an optimal balance between accuracy and sparsity.
+
+---
+
+### Conclusion
+
+Although higher λ values achieve greater sparsity, the best qualitative pruning behavior is observed at **λ = 1e-6**, where the model maintains a clear distinction between pruned and active connections. This indicates effective **selective pruning**, rather than uniform suppression.
+
+Overall, the experiment demonstrates that **self-pruning networks require careful tuning of sparsity strength to balance model efficiency and predictive performance**.
+
 ---
 
 # **Section 3: Best Model's Plot**
