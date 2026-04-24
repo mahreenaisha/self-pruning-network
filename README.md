@@ -7,6 +7,7 @@ cd <repo>
 python setup.py   # creates venv, installs deps
 python main.py
 ```
+Note: main.py was renamed from self-pruning-nn.py. Full commit history can be viewed in repository history.
 ## About the Project
 
 This project implements a **self-pruning neural network** using PyTorch. The goal is to build a model that can **automatically learn which connections (weights) are important and remove the unnecessary ones during training**, instead of pruning after training.
